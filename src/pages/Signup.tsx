@@ -3,9 +3,18 @@ import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Brain, GraduationCap, Users } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { auth, db } from "@/firebaseConfig"; // ✅ Import Firebase Auth & Firestore
+import { createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
+import { doc, setDoc } from "firebase/firestore";
 
 const Signup = () => {
   const [role, setRole] = useState<"student" | "teacher" | null>(null);
@@ -17,10 +26,11 @@ const Signup = () => {
   });
   const navigate = useNavigate();
   const { toast } = useToast();
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!role) {
       toast({
         title: "Please select a role",
@@ -39,16 +49,46 @@ const Signup = () => {
       return;
     }
 
-    // TODO: Implement actual signup logic
-    toast({
-      title: "Account created!",
-      description: `Welcome ${formData.name}! Redirecting to your dashboard...`,
-    });
+    try {
+      setLoading(true);
 
-    // Navigate to appropriate dashboard
-    setTimeout(() => {
-      navigate(role === "teacher" ? "/teacher/dashboard" : "/student/dashboard");
-    }, 1500);
+      // ✅ Create user with Firebase Auth
+      const userCredential = await createUserWithEmailAndPassword(
+        auth,
+        formData.email,
+        formData.password
+      );
+
+      const user = userCredential.user;
+
+      // ✅ Update display name
+      await updateProfile(user, { displayName: formData.name });
+
+      // ✅ Store role in Firestore
+      await setDoc(doc(db, "users", user.uid), {
+        name: formData.name,
+        email: formData.email,
+        role: role,
+      });
+
+      toast({
+        title: "Account created!",
+        description: `Welcome ${formData.name}! Redirecting to your dashboard...`,
+      });
+
+      // Navigate to dashboard based on role
+      setTimeout(() => {
+        navigate(role === "teacher" ? "/teacher/dashboard" : "/student/dashboard");
+      }, 1500);
+    } catch (error: any) {
+      toast({
+        title: "Signup failed",
+        description: error.message || "Something went wrong",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -67,7 +107,7 @@ const Signup = () => {
 
         {!role ? (
           <div className="grid md:grid-cols-2 gap-6">
-            <Card 
+            <Card
               className="cursor-pointer hover:shadow-lg transition-all hover:border-primary group"
               onClick={() => setRole("student")}
             >
@@ -80,29 +120,9 @@ const Signup = () => {
                   Practice logical reasoning and track your progress
                 </CardDescription>
               </CardHeader>
-              <CardContent>
-                <ul className="space-y-2 text-sm text-muted-foreground">
-                  <li className="flex items-center gap-2">
-                    <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                    Take AI-powered quizzes
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                    Get instant detailed feedback
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                    Track your performance
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <div className="h-1.5 w-1.5 rounded-full bg-primary" />
-                    Access learning materials
-                  </li>
-                </ul>
-              </CardContent>
             </Card>
 
-            <Card 
+            <Card
               className="cursor-pointer hover:shadow-lg transition-all hover:border-accent group"
               onClick={() => setRole("teacher")}
             >
@@ -115,35 +135,13 @@ const Signup = () => {
                   Create classes and guide your students' learning
                 </CardDescription>
               </CardHeader>
-              <CardContent>
-                <ul className="space-y-2 text-sm text-muted-foreground">
-                  <li className="flex items-center gap-2">
-                    <div className="h-1.5 w-1.5 rounded-full bg-accent" />
-                    Create and manage classes
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <div className="h-1.5 w-1.5 rounded-full bg-accent" />
-                    AI-assisted quiz creation
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <div className="h-1.5 w-1.5 rounded-full bg-accent" />
-                    Monitor student progress
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <div className="h-1.5 w-1.5 rounded-full bg-accent" />
-                    Get AI-powered insights
-                  </li>
-                </ul>
-              </CardContent>
             </Card>
           </div>
         ) : (
           <Card className="max-w-md mx-auto">
             <CardHeader>
               <CardTitle>Sign Up as {role === "student" ? "Student" : "Teacher"}</CardTitle>
-              <CardDescription>
-                Enter your details to create your account
-              </CardDescription>
+              <CardDescription>Enter your details to create your account</CardDescription>
             </CardHeader>
             <CardContent>
               <form onSubmit={handleSubmit} className="space-y-4">
@@ -201,8 +199,8 @@ const Signup = () => {
                   >
                     Back
                   </Button>
-                  <Button type="submit" className="flex-1 bg-gradient-to-r from-primary to-primary/80">
-                    Create Account
+                  <Button type="submit" className="flex-1 bg-gradient-to-r from-primary to-primary/80" disabled={loading}>
+                    {loading ? "Creating..." : "Create Account"}
                   </Button>
                 </div>
               </form>

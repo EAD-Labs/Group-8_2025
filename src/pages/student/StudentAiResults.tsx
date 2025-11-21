@@ -1,4 +1,3 @@
-// src/pages/student/StudentQuizResults.tsx
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,17 +6,16 @@ import { Brain, CheckCircle2, XCircle, Award, Sparkles } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { auth, db } from "@/firebaseConfig";
 import { doc, getDoc, setDoc } from "firebase/firestore";
-import { onAuthStateChanged } from "firebase/auth";
 import { useToast } from "@/hooks/use-toast";
 
 type Attempt = {
   quizId: string;
-  classId?: string;
-  teacherId?: string;
+  classId?: string | null;
+  teacherId?: string | null;
   title: string;
   submittedAt: string;
   answers?: Record<number, string>;
-  type?: "teacher" | "ai"; // "ai" for practice quizzes
+  type?: "teacher" | "ai";
 };
 
 type Q = { question: string; options: string[]; correct: string };
@@ -32,10 +30,12 @@ type AiFeedback = {
 };
 
 const StudentQuizResults = () => {
-  const { classId, quizId } = useParams<{ classId?: string; quizId: string }>();
+  // classId is optional so this page can serve both routes:
+  // /student/class/:classId/quiz/:quizId/results  (teacher quiz)
+  // /student/quiz/:quizId/results                 (AI quiz)
+  const { classId: routeClassId, quizId } = useParams<{ classId?: string; quizId: string }>();
   const { toast } = useToast();
 
-  const [uid, setUid] = useState<string | null>(auth.currentUser?.uid ?? null);
   const [attempt, setAttempt] = useState<Attempt | null>(null);
   const [quiz, setQuiz] = useState<QuizDoc | null>(null);
   const [loading, setLoading] = useState(true);
@@ -44,76 +44,62 @@ const StudentQuizResults = () => {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiFeedback, setAiFeedback] = useState<AiFeedback | null>(null);
 
-  // Wait for auth ready
-  useEffect(() => {
-    if (auth.currentUser) {
-      setUid(auth.currentUser.uid);
-      return;
-    }
-    const unsub = onAuthStateChanged(auth, (user) => {
-      setUid(user ? user.uid : null);
-    });
-    return () => unsub();
-  }, []);
-
-  // Load attempt + quiz + feedback
   useEffect(() => {
     const run = async () => {
-      if (!uid || !quizId) { setLoading(false); return; }
+      const user = auth.currentUser;
+      if (!user || !quizId) { setLoading(false); return; }
 
-      try {
-        // 1) Attempt
-        const aRef = doc(db, "students", uid, "attempts", quizId);
-        const aSnap = await getDoc(aRef);
-        if (!aSnap.exists()) { setLoading(false); return; }
-        const att = aSnap.data() as Attempt;
-        setAttempt(att);
-
-        // 2) Quiz doc: teacher-assigned OR AI practice
-        let quizData: QuizDoc | null = null;
-
-        const isAiPractice = att.type === "ai" || !att.teacherId || !att.classId;
-        if (isAiPractice) {
-          // Read from student's practice bank
-          const pRef = doc(db, "students", uid, "practice", quizId);
-          const pSnap = await getDoc(pRef);
-          if (pSnap.exists()) {
-            const pd = pSnap.data() as any;
-            quizData = { title: pd.title || "Practice Quiz", questions: (pd.questions || []) as Q[] };
-          }
-        } else {
-          // Read from teacher’s quiz path
-          const qRef = doc(db, "teachers", att.teacherId!, "classes", att.classId!, "quizzes", att.quizId);
-          const qSnap = await getDoc(qRef);
-          if (qSnap.exists()) {
-            quizData = qSnap.data() as QuizDoc;
-          }
-        }
-
-        if (!quizData) {
-          setLoading(false);
-          return;
-        }
-        setQuiz(quizData);
-
-        // 3) Existing AI feedback (if any)
-        const fbRef = doc(db, "students", uid, "ai_feedback", quizId);
-        const fbSnap = await getDoc(fbRef);
-        if (fbSnap.exists()) setAiFeedback(fbSnap.data() as AiFeedback);
-      } catch (err) {
-        console.error("Results load error:", err);
-        toast({
-          title: "Failed to load results",
-          description: err instanceof Error ? err.message : "Unknown error",
-          variant: "destructive",
-        });
-      } finally {
-        setLoading(false);
+      // 1) Try TEACHER attempt first
+      let att: Attempt | null = null;
+      let attSnap = await getDoc(doc(db, "students", user.uid, "attempts", quizId));
+      if (attSnap.exists()) {
+        att = { type: "teacher", ...(attSnap.data() as Attempt) };
       }
-    };
 
+      // 2) If not found, try AI PRACTICE attempt
+      if (!att) {
+        const pAttSnap = await getDoc(doc(db, "students", user.uid, "practiceAttempts", quizId));
+        if (pAttSnap.exists()) {
+          const d = pAttSnap.data() as any;
+          att = {
+            quizId,
+            title: d.title || "AI Practice",
+            submittedAt: d.submittedAt,
+            answers: d.answers || {},
+            // explicit type and no class/teacher
+            type: "ai",
+            classId: null,
+            teacherId: null,
+          };
+        }
+      }
+
+      if (!att) { setLoading(false); return; }
+      setAttempt(att);
+
+      // 3) Load QUIZ content (answer key) from the correct place
+      if (att.type === "teacher") {
+        const tId = att.teacherId!;
+        const cId = att.classId!;
+        const qRef = doc(db, "teachers", tId, "classes", cId, "quizzes", att.quizId);
+        const qSnap = await getDoc(qRef);
+        if (qSnap.exists()) setQuiz(qSnap.data() as QuizDoc);
+      } else {
+        // AI practice quiz stored under student's practice
+        const pRef = doc(db, "students", user.uid, "practice", att.quizId);
+        const pSnap = await getDoc(pRef);
+        if (pSnap.exists()) setQuiz(pSnap.data() as QuizDoc);
+      }
+
+      // 4) Load any existing AI feedback
+      const fbRef = doc(db, "students", user.uid, "ai_feedback", quizId);
+      const fbSnap = await getDoc(fbRef);
+      if (fbSnap.exists()) setAiFeedback(fbSnap.data() as AiFeedback);
+
+      setLoading(false);
+    };
     run();
-  }, [uid, quizId, toast]);
+  }, [quizId]);
 
   // --- Robust JSON extraction helper (handles ```json fences) ---
   const extractJSON = (text: string): any | null => {
@@ -128,7 +114,8 @@ const StudentQuizResults = () => {
   };
 
   const generateAiFeedback = async () => {
-    if (!uid || !quiz || !attempt) return;
+    const user = auth.currentUser;
+    if (!user || !quiz || !attempt) return;
 
     setAiLoading(true);
     try {
@@ -198,14 +185,20 @@ Return strictly this JSON:
         practicePlan: parsed.practicePlan,
       };
 
-      await setDoc(doc(db, "students", uid, "ai_feedback", attempt.quizId), feedback, { merge: true });
+      await setDoc(
+        doc(db, "students", user.uid, "ai_feedback", attempt.quizId),
+        feedback,
+        { merge: true }
+      );
+
       setAiFeedback(feedback);
+      toast({ title: "AI feedback generated" });
     } catch (err: any) {
       console.error(err);
       toast({
         title: "Feedback failed",
         description: err?.message || "Try again.",
-        variant: "destructive",
+        variant: "destructive"
       });
     } finally {
       setAiLoading(false);
@@ -264,7 +257,9 @@ Return strictly this JSON:
                   </div>
                 </div>
                 <div>
-                  <h1 className="text-3xl font-bold mb-2">{attempt.title}</h1>
+                  <h1 className="text-3xl font-bold mb-2">
+                    {attempt.title} {attempt.type === "ai" ? "• AI Practice" : ""}
+                  </h1>
                   <p className="text-muted-foreground">
                     Submitted on {new Date(attempt.submittedAt).toLocaleString()}
                   </p>
@@ -273,9 +268,10 @@ Return strictly this JSON:
             </CardHeader>
           </Card>
 
-          {/* Question by Question */}
+          {/* Q-by-Q Review */}
           <div className="space-y-6">
             <h2 className="text-2xl font-bold">Detailed Review</h2>
+
             {quiz.questions.map((q, index) => {
               const yourAns = attempt.answers?.[index] ?? "";
               const isCorrect = yourAns && yourAns === q.correct;
@@ -303,6 +299,7 @@ Return strictly this JSON:
                       </div>
                     </div>
                   </CardHeader>
+
                   <CardContent className="space-y-4">
                     <div>
                       <h4 className="font-semibold text-sm mb-2 text-muted-foreground">Your Answer</h4>
@@ -310,6 +307,7 @@ Return strictly this JSON:
                         {yourAns || "—"}
                       </p>
                     </div>
+
                     <div>
                       <h4 className="font-semibold text-sm mb-2 text-muted-foreground">Answer Key</h4>
                       <p className="text-sm bg-primary/5 p-3 rounded-lg border border-primary/20">
@@ -341,6 +339,7 @@ Return strictly this JSON:
                     <h4 className="font-semibold mb-1">Overview</h4>
                     <p className="text-sm text-muted-foreground">{aiFeedback.summary}</p>
                   </div>
+
                   <div className="grid md:grid-cols-2 gap-4">
                     <div className="p-3 rounded-lg bg-background/60">
                       <h4 className="font-semibold mb-2">Strengths</h4>
@@ -355,6 +354,7 @@ Return strictly this JSON:
                       </ul>
                     </div>
                   </div>
+
                   <div className="p-3 rounded-lg bg-background/60">
                     <h4 className="font-semibold mb-2">Suggested Topics</h4>
                     <div className="flex flex-wrap gap-2 text-sm">
@@ -363,6 +363,7 @@ Return strictly this JSON:
                       ))}
                     </div>
                   </div>
+
                   <div className="p-3 rounded-lg bg-background/60">
                     <h4 className="font-semibold mb-2">Practice Plan</h4>
                     <ol className="list-decimal ml-5 text-sm text-muted-foreground space-y-1">

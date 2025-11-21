@@ -48,9 +48,6 @@ const Index = () => {
             <Button size="lg" asChild className="bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70">
               <Link to="/signup">Start Learning Free</Link>
             </Button>
-            <Button size="lg" variant="outline" asChild>
-              <Link to="/login">I'm a Teacher</Link>
-            </Button>
           </div>
         </div>
       </section>

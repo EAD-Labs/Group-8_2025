@@ -1,217 +1,301 @@
-import { Link, useParams } from "react-router-dom";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useState, useEffect } from "react";
+import { useParams, useNavigate, Link } from "react-router-dom";
+import { db, auth } from "@/firebaseConfig";
+import { collection, doc, getDoc, addDoc, setDoc, serverTimestamp } from "firebase/firestore";
 import { Button } from "@/components/ui/button";
-import { Brain, FileText, Users, TrendingUp, Sparkles, BarChart } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
+import { Input } from "@/components/ui/input";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Plus, X } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { onAuthStateChanged } from "firebase/auth";
 
-// Mock data
-const quizData = {
-  id: 1,
-  title: "Logical Fallacies",
-  class: "Grade 10 - Logic A",
-  totalQuestions: 15,
-  totalPoints: 100,
-  attempts: 25,
-  avgScore: 78,
-  questions: [
-    { id: 1, question: "Identify the fallacy: 'Everyone is doing it, so it must be right.'", points: 5 },
-    { id: 2, question: "Explain the ad hominem fallacy with an example.", points: 10 },
-    { id: 3, question: "What is a straw man argument?", points: 7 },
-  ],
-};
+interface Question { question: string; options: string[]; correct: string; }
 
-const studentResults = [
-  { id: 1, name: "Alice Johnson", score: 85, totalPoints: 100, attempted: "Jan 5, 2025" },
-  { id: 2, name: "Bob Smith", score: 72, totalPoints: 100, attempted: "Jan 5, 2025" },
-  { id: 3, name: "Charlie Davis", score: 92, totalPoints: 100, attempted: "Jan 5, 2025" },
-  { id: 4, name: "Diana Wilson", score: 88, totalPoints: 100, attempted: "Jan 5, 2025" },
-  { id: 5, name: "Eva Martinez", score: 68, totalPoints: 100, attempted: "Jan 6, 2025" },
-];
+interface QuizData {
+  id?: string;
+  title: string;
+  questions: Question[];
+  status: "draft" | "ongoing";
+  startDate?: string;
+  dueDate?: string;
+}
 
 const TeacherQuiz = () => {
-  const { quizId } = useParams();
+  const { quizId, classId } = useParams<{ quizId: string; classId: string }>();
+  const navigate = useNavigate();
+  const { toast } = useToast();
+
+  const [quiz, setQuiz] = useState<QuizData>({
+    title: "",
+    questions: [{ question: "", options: ["", ""], correct: "" }],
+    status: "ongoing",
+    dueDate: "",
+  });
+  const [loading, setLoading] = useState(!!quizId);
+  const [userReady, setUserReady] = useState(false);
+
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+
+  useEffect(() => {
+    console.log("OPENAI KEY:", import.meta.env.VITE_OPENAI_API_KEY?.slice(0, 8) + "...");
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setUserReady(!!user);
+      if (!user) setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!quizId || !userReady || !auth.currentUser) {
+      setLoading(false);
+      return;
+    }
+    const fetchQuiz = async () => {
+      const docRef = doc(db, "teachers", auth.currentUser!.uid, "classes", classId!, "quizzes", quizId);
+      const snapshot = await getDoc(docRef);
+      if (snapshot.exists()) {
+        const data = snapshot.data() as QuizData;
+        setQuiz({
+          ...data,
+          questions: data.questions?.length ? data.questions : [{ question: "", options: ["", ""], correct: "" }],
+        });
+      }
+      setLoading(false);
+    };
+    fetchQuiz();
+  }, [quizId, classId, userReady]);
+
+  if (!classId) {
+    return (
+      <div className="p-10 text-center text-red-600">
+        Error: No class selected. Go back to your{" "}
+        <Link to="/teacher/dashboard" className="underline text-primary">Dashboard</Link>
+      </div>
+    );
+  }
+
+  if (loading) return <div className="p-10">Loading...</div>;
+
+  const handleAddQuestion = () => {
+    setQuiz((prev) => ({
+      ...prev,
+      questions: [...prev.questions, { question: "", options: ["", ""], correct: "" }],
+    }));
+  };
+
+  const handleDeleteQuestion = (index: number) => {
+    setQuiz((prev) => ({
+      ...prev,
+      questions: prev.questions.filter((_, i) => i !== index),
+    }));
+  };
+
+  const handleQuestionChange = (index: number, field: "question" | "correct", value: string) => {
+    const updated = [...quiz.questions];
+    updated[index][field] = value;
+    setQuiz({ ...quiz, questions: updated });
+  };
+
+  const handleOptionChange = (qIndex: number, optIndex: number, value: string) => {
+    const updated = [...quiz.questions];
+    updated[qIndex].options[optIndex] = value;
+    setQuiz({ ...quiz, questions: updated });
+  };
+
+  const handleSave = async () => {
+    if (!auth.currentUser) {
+      toast({ title: "Not logged in", description: "Please login", variant: "destructive" });
+      return;
+    }
+    if (!quiz.title.trim()) {
+      toast({ title: "Error", description: "Quiz title required", variant: "destructive" });
+      return;
+    }
+    try {
+      const quizzesCol = collection(db, "teachers", auth.currentUser.uid, "classes", classId, "quizzes");
+      if (quizId) {
+        const docRef = doc(quizzesCol, quizId);
+        await setDoc(docRef, { ...quiz, updatedAt: serverTimestamp() });
+        toast({ title: "Quiz updated" });
+      } else {
+        await addDoc(quizzesCol, { ...quiz, status: quiz.status, createdAt: serverTimestamp() });
+        toast({ title: "Quiz created" });
+      }
+      navigate(`/teacher/class/${classId}`);
+    } catch (err: any) {
+      console.error(err);
+      toast({ title: "Error", description: err?.message || "Something went wrong", variant: "destructive" });
+    }
+  };
+
+  // ---------- AI helper to extract JSON even if fenced ----------
+  const extractJSON = (text: string): any | null => {
+    if (!text) return null;
+    let cleaned = text.replace(/```json|```/gi, "").trim();
+    try { return JSON.parse(cleaned); } catch {}
+    const s = cleaned.indexOf("{"); const e = cleaned.lastIndexOf("}");
+    if (s !== -1 && e !== -1 && e > s) {
+      try { return JSON.parse(cleaned.slice(s, e + 1)); } catch {}
+    }
+    return null;
+  };
+
+  const handleGenerateAIQuestion = async () => {
+    if (!aiPrompt.trim()) {
+      toast({ title: "Error", description: "Please enter a prompt", variant: "destructive" });
+      return;
+    }
+    setAiLoading(true);
+    try {
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${import.meta.env.VITE_OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [
+            { role: "system", content: "You are an AI quiz generator. Return ONLY raw JSON. No prose or markdown." },
+            { role: "user", content:
+`Generate ONE MCQ about: ${aiPrompt}
+Return EXACT JSON: {"question":"string","options":["a","b","c","d"],"correct":"one of the options"}` },
+          ],
+          temperature: 0.7,
+        }),
+      });
+      if (!res.ok) throw new Error(`OpenAI API error (${res.status})`);
+      const data = await res.json();
+      const raw = data?.choices?.[0]?.message?.content ?? "";
+      const parsed = extractJSON(raw);
+      if (!parsed || !parsed.question || !Array.isArray(parsed.options)) {
+        throw new Error("AI did not return valid question format.");
+      }
+      const generated: Question = {
+        question: String(parsed.question),
+        options: parsed.options.map((x: any) => String(x)).slice(0, 4),
+        correct: String(parsed.correct ?? ""),
+      };
+      while (generated.options.length < 4) generated.options.push("");
+      setQuiz((prev) => ({ ...prev, questions: [...prev.questions, generated] }));
+      setAiPrompt("");
+      toast({ title: "AI question added!" });
+    } catch (err: any) {
+      console.error(err);
+      toast({ title: "Error", description: err?.message || "Failed to generate question", variant: "destructive" });
+    } finally {
+      setAiLoading(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary/5 via-background to-accent/5">
-      {/* Navigation */}
       <nav className="border-b bg-background/80 backdrop-blur-sm sticky top-0 z-50">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-2">
-            <Brain className="h-8 w-8 text-primary" />
             <span className="text-2xl font-bold bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent">
               LogicLearn
             </span>
           </Link>
-          <div className="flex items-center gap-4">
-            <Button variant="ghost" asChild>
-              <Link to="/teacher/dashboard">Dashboard</Link>
-            </Button>
-            <Button variant="outline" asChild>
-              <Link to="/login">Logout</Link>
-            </Button>
-          </div>
+          <Button variant="outline" asChild>
+            <Link to={`/teacher/class/${classId}`}>Back to Class</Link>
+          </Button>
         </div>
       </nav>
 
-      {/* Main Content */}
-      <div className="container mx-auto px-4 py-8">
-        {/* Header */}
-        <div className="mb-8">
-          <div className="flex items-start justify-between mb-4">
-            <div>
-              <h1 className="text-4xl font-bold mb-2">{quizData.title}</h1>
-              <p className="text-muted-foreground">{quizData.class}</p>
-            </div>
-            <Button variant="outline" asChild>
-              <Link to={`/teacher/class/${1}`}>Back to Class</Link>
-            </Button>
-          </div>
-          
-          {/* Quiz Stats */}
-          <div className="grid md:grid-cols-4 gap-6">
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-medium text-muted-foreground">Questions</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold">{quizData.totalQuestions}</div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-medium text-muted-foreground">Total Points</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold">{quizData.totalPoints}</div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-medium text-muted-foreground">Attempts</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold">{quizData.attempts}</div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-medium text-muted-foreground">Average Score</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold">{quizData.avgScore}%</div>
-              </CardContent>
-            </Card>
-          </div>
-        </div>
-
-        {/* AI Feedback */}
-        <Card className="mb-8 bg-gradient-to-br from-accent/5 to-accent/10 border-accent/20">
+      <div className="container mx-auto px-4 py-10">
+        <Card className="p-6">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Sparkles className="h-5 w-5 text-accent" />
-              AI Feedback & Insights
-            </CardTitle>
+            <CardTitle>{quizId ? "Edit Quiz" : "Create Quiz"}</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="p-4 rounded-lg bg-background/60 backdrop-blur-sm">
-              <h4 className="font-semibold mb-2 flex items-center gap-2">
-                <TrendingUp className="h-4 w-4 text-green-600" />
-                Strengths
-              </h4>
-              <ul className="space-y-1 text-sm text-muted-foreground ml-6">
-                <li>• Students performed well on identifying basic fallacies (avg: 88%)</li>
-                <li>• Strong understanding of ad hominem arguments (avg: 85%)</li>
-              </ul>
+
+          <CardContent className="space-y-6">
+            <div>
+              <label className="block mb-1 font-medium">Quiz Title</label>
+              <Input
+                value={quiz.title}
+                onChange={(e) => setQuiz({ ...quiz, title: e.target.value })}
+                placeholder="Enter quiz title"
+              />
             </div>
 
-            <div className="p-4 rounded-lg bg-background/60 backdrop-blur-sm">
-              <h4 className="font-semibold mb-2 flex items-center gap-2">
-                <BarChart className="h-4 w-4 text-accent" />
-                Areas for Improvement
-              </h4>
-              <ul className="space-y-1 text-sm text-muted-foreground ml-6">
-                <li>• Straw man arguments need more practice (avg: 65%)</li>
-                <li>• 5 students need extra help with complex fallacies</li>
-              </ul>
+            <div>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={quiz.status === "draft"}
+                  onChange={(e) =>
+                    setQuiz((prev) => ({ ...prev, status: e.target.checked ? "draft" : "ongoing" }))
+                  }
+                />
+                Complete Later
+              </label>
             </div>
 
-            <div className="p-4 rounded-lg bg-background/60 backdrop-blur-sm">
-              <h4 className="font-semibold mb-2 flex items-center gap-2">
-                <Users className="h-4 w-4 text-primary" />
-                Student Recommendations
-              </h4>
-              <p className="text-sm text-muted-foreground">
-                Consider providing additional resources on complex fallacies for Eva Martinez and Bob Smith.
-                They may benefit from one-on-one sessions or supplementary materials.
-              </p>
+            {/* AI Assistant */}
+            <div className="mb-4">
+              <label className="block mb-1 font-medium">AI-assisted Question Generator</label>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="Describe a question topic (e.g., 'Quadratic equations basics')"
+                  value={aiPrompt}
+                  onChange={(e) => setAiPrompt(e.target.value)}
+                />
+                <Button onClick={handleGenerateAIQuestion} disabled={aiLoading}>
+                  {aiLoading ? "Generating..." : "Generate Question"}
+                </Button>
+              </div>
+            </div>
+
+            <div>
+              <h2 className="font-semibold mb-2">Questions</h2>
+              {quiz.questions.map((q, idx) => (
+                <Card key={idx} className="mb-3 border p-3 rounded-md">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="font-semibold">Question {idx + 1}</span>
+                    <Button variant="ghost" size="icon" onClick={() => handleDeleteQuestion(idx)}>
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <Input
+                    placeholder={`Question text`}
+                    value={q.question}
+                    onChange={(e) => handleQuestionChange(idx, "question", e.target.value)}
+                    className="mb-2"
+                  />
+                  {q.options.map((opt, oidx) => (
+                    <Input
+                      key={oidx}
+                      placeholder={`Option ${oidx + 1}`}
+                      value={opt}
+                      onChange={(e) => handleOptionChange(idx, oidx, e.target.value)}
+                      className="mb-1"
+                    />
+                  ))}
+                  <Input
+                    placeholder="Correct answer"
+                    value={q.correct}
+                    onChange={(e) => handleQuestionChange(idx, "correct", e.target.value)}
+                  />
+                </Card>
+              ))}
+              <Button onClick={handleAddQuestion} className="mt-2 w-full">
+                <Plus className="h-4 w-4 mr-2" /> Add Question
+              </Button>
+            </div>
+
+            <div className="flex justify-end gap-3 mt-4">
+              <Button variant="outline" asChild>
+                <Link to={`/teacher/class/${classId}`}>Cancel</Link>
+              </Button>
+              <Button onClick={handleSave}>{quizId ? "Update Quiz" : "Save Quiz"}</Button>
             </div>
           </CardContent>
         </Card>
-
-        <div className="grid lg:grid-cols-2 gap-8">
-          {/* Questions */}
-          <div>
-            <h2 className="text-2xl font-bold mb-4 flex items-center gap-2">
-              <FileText className="h-6 w-6" />
-              Questions
-            </h2>
-            <div className="space-y-3">
-              {quizData.questions.map((question, index) => (
-                <Card key={question.id}>
-                  <CardContent className="p-4">
-                    <div className="flex items-start gap-3">
-                      <Badge variant="secondary" className="mt-1">Q{index + 1}</Badge>
-                      <div className="flex-1">
-                        <p className="text-sm mb-2">{question.question}</p>
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <span className="font-medium">{question.points} points</span>
-                        </div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-              <Button variant="outline" className="w-full">
-                View All Questions
-              </Button>
-            </div>
-          </div>
-
-          {/* Student Results */}
-          <div>
-            <h2 className="text-2xl font-bold mb-4 flex items-center gap-2">
-              <Users className="h-6 w-6" />
-              Student Results
-            </h2>
-            <Card>
-              <CardContent className="p-0">
-                <div className="divide-y">
-                  {studentResults.map((student) => (
-                    <div key={student.id} className="p-4 hover:bg-muted/50 transition-colors">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-medium">{student.name}</span>
-                        <span className="text-lg font-bold">
-                          {student.score}/{student.totalPoints}
-                        </span>
-                      </div>
-                      <div className="space-y-2">
-                        <Progress value={(student.score / student.totalPoints) * 100} />
-                        <div className="flex justify-between text-xs text-muted-foreground">
-                          <span>{student.attempted}</span>
-                          <span>{Math.round((student.score / student.totalPoints) * 100)}%</span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </div>
       </div>
     </div>
   );

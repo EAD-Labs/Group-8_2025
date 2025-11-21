@@ -1,24 +1,131 @@
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import {
+  onAuthStateChanged,
+  updateProfile,
+  updateEmail,
+  updatePassword,
+  reauthenticateWithCredential,
+  EmailAuthProvider,
+} from "firebase/auth";
+import { auth } from "@/firebaseConfig";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Brain, User, Mail, BookOpen, Award } from "lucide-react";
+import { Brain } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
-
-const teacherData = {
-  name: "Dr. Sarah Johnson",
-  email: "sarah.johnson@school.edu",
-  department: "Logic & Critical Thinking",
-  experience: "8 years",
-  classes: 3,
-  students: 84,
-  quizzesCreated: 45,
-  avgClassScore: 79,
-};
+import { useToast } from "@/hooks/use-toast";
 
 const TeacherProfile = () => {
+  const [user, setUser] = useState(null);
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [passwords, setPasswords] = useState({
+    current: "",
+    new: "",
+    confirm: "",
+  });
+  const [updatingPassword, setUpdatingPassword] = useState(false);
+  const { toast } = useToast();
+
+  // Fetch logged-in teacher
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser);
+        setFullName(currentUser.displayName || "");
+        setEmail(currentUser.email || "");
+      }
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  // Save profile updates
+  const handleSave = async () => {
+    if (!auth.currentUser) return;
+    setSaving(true);
+    try {
+      if (fullName !== auth.currentUser.displayName) {
+        await updateProfile(auth.currentUser, { displayName: fullName });
+      }
+      if (email !== auth.currentUser.email) {
+        await updateEmail(auth.currentUser, email);
+      }
+      toast({
+        title: "Profile updated successfully",
+        description: "Your name and email have been updated.",
+      });
+    } catch (error) {
+      toast({
+        title: "Error updating profile",
+        description: error.message,
+        variant: "destructive",
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Update password
+  const handlePasswordChange = async () => {
+    if (!auth.currentUser) return;
+    const { current, new: newPass, confirm } = passwords;
+
+    if (!current || !newPass || !confirm) {
+      toast({
+        title: "Missing fields",
+        description: "Please fill in all password fields.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (newPass !== confirm) {
+      toast({
+        title: "Password mismatch",
+        description: "New password and confirmation do not match.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setUpdatingPassword(true);
+    try {
+      // Reauthenticate
+      const credential = EmailAuthProvider.credential(auth.currentUser.email, current);
+      await reauthenticateWithCredential(auth.currentUser, credential);
+
+      // Update password
+      await updatePassword(auth.currentUser, newPass);
+
+      toast({
+        title: "Password updated",
+        description: "Your password has been successfully changed.",
+      });
+
+      setPasswords({ current: "", new: "", confirm: "" });
+    } catch (error) {
+      toast({
+        title: "Password update failed",
+        description:
+          error.code === "auth/wrong-password"
+            ? "Incorrect current password."
+            : error.message,
+        variant: "destructive",
+      });
+    } finally {
+      setUpdatingPassword(false);
+    }
+  };
+
+  if (loading) {
+    return <div className="text-center mt-20 text-muted-foreground">Loading...</div>;
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary/5 via-background to-accent/5">
       {/* Navigation */}
@@ -53,18 +160,15 @@ const TeacherProfile = () => {
                 <CardHeader className="text-center">
                   <Avatar className="h-24 w-24 mx-auto mb-4">
                     <AvatarFallback className="bg-primary/10 text-primary text-2xl font-bold">
-                      SJ
+                      {fullName ? fullName[0] : "?"}
                     </AvatarFallback>
                   </Avatar>
-                  <CardTitle>{teacherData.name}</CardTitle>
-                  <CardDescription>{teacherData.department}</CardDescription>
-                  <Badge className="mt-2" variant="secondary">
-                    {teacherData.experience} Teaching Experience
-                  </Badge>
+                  <CardTitle>{fullName || "Teacher"}</CardTitle>
+                  <CardDescription>{email}</CardDescription>
                 </CardHeader>
               </Card>
 
-              {/* Stats */}
+              {/* Teaching Stats */}
               <Card className="mt-6">
                 <CardHeader>
                   <CardTitle className="text-lg">Teaching Stats</CardTitle>
@@ -72,19 +176,15 @@ const TeacherProfile = () => {
                 <CardContent className="space-y-4">
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-muted-foreground">Classes</span>
-                    <span className="font-semibold">{teacherData.classes}</span>
+                    <span className="font-semibold">3</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-muted-foreground">Total Students</span>
-                    <span className="font-semibold">{teacherData.students}</span>
+                    <span className="font-semibold">84</span>
                   </div>
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-muted-foreground">Quizzes Created</span>
-                    <span className="font-semibold">{teacherData.quizzesCreated}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Avg Class Score</span>
-                    <span className="font-semibold">{teacherData.avgClassScore}%</span>
+                    <span className="font-semibold">45</span>
                   </div>
                 </CardContent>
               </Card>
@@ -92,39 +192,45 @@ const TeacherProfile = () => {
 
             {/* Profile Details */}
             <div className="md:col-span-2 space-y-6">
+              {/* Personal Info */}
               <Card>
                 <CardHeader>
                   <CardTitle>Personal Information</CardTitle>
                   <CardDescription>Update your profile details</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="grid md:grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="firstName">First Name</Label>
-                      <Input id="firstName" defaultValue="Sarah" />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="lastName">Last Name</Label>
-                      <Input id="lastName" defaultValue="Johnson" />
-                    </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="fullName">Full Name</Label>
+                    <Input
+                      id="fullName"
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
+                      placeholder="Enter full name"
+                    />
                   </div>
 
                   <div className="space-y-2">
                     <Label htmlFor="email">Email</Label>
-                    <Input id="email" type="email" defaultValue={teacherData.email} />
+                    <Input
+                      id="email"
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="Enter email"
+                    />
                   </div>
 
-                  <div className="space-y-2">
-                    <Label htmlFor="department">Department</Label>
-                    <Input id="department" defaultValue={teacherData.department} />
-                  </div>
-
-                  <Button className="bg-gradient-to-r from-primary to-primary/80">
-                    Save Changes
+                  <Button
+                    onClick={handleSave}
+                    disabled={saving}
+                    className="bg-gradient-to-r from-primary to-primary/80"
+                  >
+                    {saving ? "Saving..." : "Save Changes"}
                   </Button>
                 </CardContent>
               </Card>
 
+              {/* Password Change */}
               <Card>
                 <CardHeader>
                   <CardTitle>Change Password</CardTitle>
@@ -133,52 +239,41 @@ const TeacherProfile = () => {
                 <CardContent className="space-y-4">
                   <div className="space-y-2">
                     <Label htmlFor="currentPassword">Current Password</Label>
-                    <Input id="currentPassword" type="password" />
+                    <Input
+                      id="currentPassword"
+                      type="password"
+                      value={passwords.current}
+                      onChange={(e) => setPasswords({ ...passwords, current: e.target.value })}
+                    />
                   </div>
 
                   <div className="space-y-2">
                     <Label htmlFor="newPassword">New Password</Label>
-                    <Input id="newPassword" type="password" />
+                    <Input
+                      id="newPassword"
+                      type="password"
+                      value={passwords.new}
+                      onChange={(e) => setPasswords({ ...passwords, new: e.target.value })}
+                    />
                   </div>
 
                   <div className="space-y-2">
                     <Label htmlFor="confirmPassword">Confirm New Password</Label>
-                    <Input id="confirmPassword" type="password" />
+                    <Input
+                      id="confirmPassword"
+                      type="password"
+                      value={passwords.confirm}
+                      onChange={(e) => setPasswords({ ...passwords, confirm: e.target.value })}
+                    />
                   </div>
 
-                  <Button variant="outline">Update Password</Button>
-                </CardContent>
-              </Card>
-
-              <Card className="bg-accent/5 border-accent/20">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Award className="h-5 w-5 text-accent" />
-                    Achievements
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid md:grid-cols-2 gap-4">
-                    <div className="flex items-center gap-3 p-3 rounded-lg bg-background/60">
-                      <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
-                        <BookOpen className="h-5 w-5 text-primary" />
-                      </div>
-                      <div>
-                        <div className="font-semibold">Quiz Master</div>
-                        <div className="text-xs text-muted-foreground">Created 40+ quizzes</div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-3 p-3 rounded-lg bg-background/60">
-                      <div className="h-10 w-10 rounded-full bg-accent/10 flex items-center justify-center">
-                        <Award className="h-5 w-5 text-accent" />
-                      </div>
-                      <div>
-                        <div className="font-semibold">Top Educator</div>
-                        <div className="text-xs text-muted-foreground">High student satisfaction</div>
-                      </div>
-                    </div>
-                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={handlePasswordChange}
+                    disabled={updatingPassword}
+                  >
+                    {updatingPassword ? "Updating..." : "Update Password"}
+                  </Button>
                 </CardContent>
               </Card>
             </div>

@@ -6,30 +6,59 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Brain } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { signInWithEmailAndPassword } from "firebase/auth";
+import { auth, db } from "@/firebaseConfig"; // ✅ Import Firebase Auth & Firestore
+import { doc, getDoc } from "firebase/firestore";
 
 const Login = () => {
-  const [formData, setFormData] = useState({
-    email: "",
-    password: "",
-  });
+  const [formData, setFormData] = useState({ email: "", password: "" });
+  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setLoading(true);
 
-    // TODO: Implement actual login logic
-    // For now, mock login based on email pattern
-    const isTeacher = formData.email.includes("teacher");
+    try {
+      // ✅ Sign in with Firebase Auth
+      const userCredential = await signInWithEmailAndPassword(auth, formData.email, formData.password);
+      const user = userCredential.user;
 
-    toast({
-      title: "Login successful!",
-      description: "Redirecting to your dashboard...",
-    });
+      // ✅ Fetch user role from Firestore
+      const docRef = doc(db, "users", user.uid);
+      const docSnap = await getDoc(docRef);
 
-    setTimeout(() => {
-      navigate(isTeacher ? "/teacher/dashboard" : "/student/dashboard");
-    }, 1000);
+      if (!docSnap.exists()) {
+        toast({
+          title: "Login failed",
+          description: "User role not found. Contact support.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const userData = docSnap.data();
+      const role = userData.role; // "student" or "teacher"
+
+      toast({
+        title: "Login successful",
+        description: "Redirecting to your dashboard...",
+      });
+
+      // ✅ Navigate to dashboard based on role
+      setTimeout(() => {
+        navigate(role === "teacher" ? "/teacher/dashboard" : "/student/dashboard");
+      }, 1000);
+    } catch (error: any) {
+      toast({
+        title: "Login failed",
+        description: error.message || "Something went wrong",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -81,8 +110,8 @@ const Login = () => {
                 />
               </div>
 
-              <Button type="submit" className="w-full bg-gradient-to-r from-primary to-primary/80">
-                Log In
+              <Button type="submit" className="w-full bg-gradient-to-r from-primary to-primary/80" disabled={loading}>
+                {loading ? "Logging in..." : "Log In"}
               </Button>
             </form>
 
